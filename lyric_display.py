@@ -773,7 +773,7 @@ class HotkeyFilter(QAbstractNativeEventFilter):
         try:
             if bytes(event_type) in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
                 msg = wt.MSG.from_address(int(message))
-                if msg.message == WM_HOTKEY:
+                if msg.message == WM_HOTKEY and int(msg.wParam) in HOTKEYS:
                     self._on_hotkey(int(msg.wParam))
                     return True, 0
         except Exception:

@@ -21,7 +21,10 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QSize, Signal, QEvent
+import ctypes.wintypes as wt
+
+from PySide6.QtCore import (QAbstractNativeEventFilter, QEvent, QSize, Qt,
+                            QTimer, QUrl, Signal)
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QShortcut, QKeySequence
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from pypinyin import Style, lazy_pinyin
@@ -223,6 +226,9 @@ class PlayerWindow(QMainWindow):
         self._install_shortcuts()
         self._refresh_mode_button()
         self._load_library()
+        self._hotkey_filter = PlayerHotkeyFilter(self._on_global_hotkey)
+        QApplication.instance().installNativeEventFilter(self._hotkey_filter)
+        self._register_hotkeys()
         QTimer.singleShot(400, self._restore_last)
 
     # ---------------- 播放器状态 ----------------
@@ -402,6 +408,29 @@ class PlayerWindow(QMainWindow):
             self._arrow_shortcuts.append(sc)
         # 在搜索框里打字时，方向键要留给文本框移动光标
         self.search.installEventFilter(self)
+
+    def _register_hotkeys(self) -> None:
+        u = ctypes.windll.user32
+        for hid, (mods, vk) in PLAYER_HOTKEYS.items():
+            u.RegisterHotKey(None, hid, mods, vk)
+
+    def _unregister_hotkeys(self) -> None:
+        u = ctypes.windll.user32
+        for hid in PLAYER_HOTKEYS:
+            try:
+                u.UnregisterHotKey(None, hid)
+            except Exception:
+                pass
+
+    def _on_global_hotkey(self, hid: int) -> None:
+        action = {
+            101: lambda: self.play_relative(-1),
+            102: lambda: self.play_relative(+1),
+            103: lambda: self._nudge(-5000),
+            104: lambda: self._nudge(+5000),
+        }.get(hid)
+        if action:
+            action()
 
     # ---------------- 音乐库 ----------------
     def _load_library(self) -> None:
@@ -700,6 +729,7 @@ class PlayerWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def closeEvent(self, event) -> None:
+        self._unregister_hotkeys()
         self._save_player_state()
         self.player.stop()
         try:
@@ -707,6 +737,36 @@ class PlayerWindow(QMainWindow):
         except Exception:
             pass
         event.accept()
+
+
+WM_HOTKEY = 0x0312
+MOD_CONTROL = 0x0002
+VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT = 0x26, 0x28, 0x25, 0x27
+
+# 焦点不在播放器时也要能切歌，所以走系统级热键，ID 避开 lyric_display 用的 1~10
+PLAYER_HOTKEYS = {
+    101: (MOD_CONTROL, VK_UP),
+    102: (MOD_CONTROL, VK_DOWN),
+    103: (MOD_CONTROL, VK_LEFT),
+    104: (MOD_CONTROL, VK_RIGHT),
+}
+
+
+class PlayerHotkeyFilter(QAbstractNativeEventFilter):
+    def __init__(self, on_hotkey) -> None:
+        super().__init__()
+        self._on_hotkey = on_hotkey
+
+    def nativeEventFilter(self, event_type, message):
+        try:
+            if bytes(event_type) in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
+                msg = wt.MSG.from_address(int(message))
+                if msg.message == WM_HOTKEY and int(msg.wParam) in PLAYER_HOTKEYS:
+                    self._on_hotkey(int(msg.wParam))
+                    return True, 0
+        except Exception:
+            pass
+        return False, 0
 
 
 PLAYER_MUTEX = r"Global\QianyuPlayer_Mutex_v1"
