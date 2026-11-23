@@ -7,3 +7,4 @@ __pycache__/
 qianyu.json
 config.json
 player.json
+qianyu-player-*.spec
