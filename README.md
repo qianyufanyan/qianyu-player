@@ -15,8 +15,8 @@
 
 不想自己打包的话，到 [Releases](https://github.com/qianyufanyan/qianyu-player/releases/latest) 下现成的：
 
-- **便携版** `qianyu-player-v1.0.0-portable.zip`（119 MB）—— 解压后双击里面的 `千羽播放器.exe` 直接用。不写注册表、不建快捷方式，删掉文件夹就算卸载，适合放 U 盘。
-- **安装程序** `qianyu-player-v1.0.0-setup.exe`（163 MB）—— 双击安装到 `%LOCALAPPDATA%\千羽播放器`，建桌面和开始菜单快捷方式，带卸载项。
+- **便携版** `qianyu-player-v1.0.1-portable.zip`（119 MB）—— 解压后双击里面的 `千羽播放器.exe` 直接用。不写注册表、不建快捷方式，删掉文件夹就算卸载，适合放 U 盘。
+- **安装程序** `qianyu-player-v1.0.1-setup.exe`（163 MB）—— 双击安装到 `%LOCALAPPDATA%\千羽播放器`，建桌面和开始菜单快捷方式，带卸载项。
 
 两个都是 Windows 10/11 x64，机器上不用装 Python。
 
