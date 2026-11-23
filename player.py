@@ -26,7 +26,7 @@ import ctypes.wintypes as wt
 from PySide6.QtCore import (QAbstractNativeEventFilter, QEvent, QSize, Qt,
                             QTimer, QUrl, Signal)
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap, QShortcut, QKeySequence
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaDevices
 from pypinyin import Style, lazy_pinyin
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -186,6 +186,9 @@ class PlayerWindow(QMainWindow):
         self.settings = None
         self.online = None
         self.sources = O.SourceStore()
+        self._really_quit = False
+        self._tray_hint_shown = False
+        self._auto_output = True
         self.tracks: list[Track] = []
         self.filtered: list[Track] = []
         self.current_index = -1
@@ -212,6 +215,14 @@ class PlayerWindow(QMainWindow):
         self.player.setAudioOutput(self.audio)
         self.audio.setVolume(max(0.0, min(1.0, self._saved_volume)))
 
+        # 蓝牙耳机连上/断开时系统默认输出会变，跟着切，否则播放器还留在旧设备上没声音
+        self.media_devices = QMediaDevices(self)
+        self.media_devices.audioOutputsChanged.connect(self._on_outputs_changed)
+        self._auto_output = True
+        self._audio_timer = QTimer(self)
+        self._audio_timer.timeout.connect(self._check_default_output)
+        self._audio_timer.start(2000)
+
         self.fetcher = L.LyricFetcher()
         self.fetcher.loaded.connect(self._on_lyrics)
 
@@ -226,6 +237,8 @@ class PlayerWindow(QMainWindow):
         self._install_shortcuts()
         self._refresh_mode_button()
         self._load_library()
+        self._refresh_outputs()
+        self._setup_tray()
         self._hotkey_filter = PlayerHotkeyFilter(self._on_global_hotkey)
         QApplication.instance().installNativeEventFilter(self._hotkey_filter)
         self._register_hotkeys()
@@ -355,6 +368,12 @@ class PlayerWindow(QMainWindow):
         btn_row.addWidget(self.btn_next)
         btn_row.addWidget(self.btn_mode)
         btn_row.addStretch(1)
+        self.out_combo = QComboBox()
+        self.out_combo.setMinimumWidth(150)
+        self.out_combo.setMaximumWidth(190)
+        self.out_combo.setToolTip("音频输出设备")
+        self.out_combo.currentIndexChanged.connect(self._on_output_picked)
+        btn_row.addWidget(self.out_combo)
         vol_label = QLabel("音量")
         vol_label.setObjectName("Sub")
         self.vol = QSlider(Qt.Horizontal)
@@ -431,6 +450,104 @@ class PlayerWindow(QMainWindow):
         }.get(hid)
         if action:
             action()
+
+    # ---------------- 音频输出 ----------------
+    AUTO_OUTPUT = "__auto__"
+
+    def _refresh_outputs(self, *_args) -> None:
+        if not hasattr(self, "out_combo"):
+            return
+        cur = self.audio.device()
+        cur_id = cur.id() if cur and not cur.isNull() else ""
+        self.out_combo.blockSignals(True)
+        self.out_combo.clear()
+        self.out_combo.addItem("跟随系统默认", self.AUTO_OUTPUT)
+        pick = 0
+        for dev in QMediaDevices.audioOutputs():
+            self.out_combo.addItem(dev.description(), dev.id())
+            if not self._auto_output and dev.id() == cur_id:
+                pick = self.out_combo.count() - 1
+        self.out_combo.setCurrentIndex(pick)
+        self.out_combo.blockSignals(False)
+
+    def _on_outputs_changed(self) -> None:
+        self._refresh_outputs()
+        self._check_default_output()
+
+    def _check_default_output(self) -> None:
+        """蓝牙耳机连上或断开时系统默认输出会变，跟着切过去。"""
+        if not self._auto_output:
+            return
+        dev = QMediaDevices.defaultAudioOutput()
+        if dev is None or dev.isNull():
+            return
+        cur = self.audio.device()
+        if cur and not cur.isNull() and cur.id() == dev.id():
+            return
+        self._switch_output(dev, auto=True)
+
+    def _on_output_picked(self, index: int) -> None:
+        if index < 0:
+            return
+        want = self.out_combo.itemData(index)
+        if want == self.AUTO_OUTPUT:
+            self._auto_output = True
+            dev = QMediaDevices.defaultAudioOutput()
+            if dev and not dev.isNull():
+                self._switch_output(dev, auto=True)
+            return
+        self._auto_output = False
+        for dev in QMediaDevices.audioOutputs():
+            if dev.id() == want:
+                self._switch_output(dev)
+                break
+
+    def _switch_output(self, device, auto: bool = False) -> None:
+        was_playing = self.player.playbackState() == QMediaPlayer.PlayingState
+        position = self.player.position()
+        self.audio.setDevice(device)
+        if was_playing:
+            self.player.setPosition(position)
+            self.player.play()
+        self._refresh_outputs()
+        if auto:
+            self._set_status(f"音频输出已切换到 {device.description()}")
+
+    # ---------------- 托盘 ----------------
+    def _setup_tray(self) -> None:
+        self.tray = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self.tray = QSystemTrayIcon(self)
+        icon = QIcon(str(ICON_PATH)) if ICON_PATH.exists() else             self.style().standardIcon(QStyle.SP_MediaPlay)
+        self.tray.setIcon(icon)
+        self.tray.setToolTip(APP_TITLE)
+        menu = QMenu()
+        menu.addAction("显示主界面", self._restore_window)
+        menu.addAction("显示 / 隐藏歌词", self._toggle_lyrics)
+        menu.addSeparator()
+        menu.addAction("播放 / 暂停", self.toggle_play)
+        menu.addAction("上一首", lambda: self.play_relative(-1))
+        menu.addAction("下一首", lambda: self.play_relative(+1))
+        menu.addSeparator()
+        menu.addAction("退出", self._quit_app)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.show()
+
+    def _on_tray_activated(self, reason) -> None:
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self._restore_window()
+
+    def _restore_window(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_app(self) -> None:
+        self._really_quit = True
+        self.close()
+        QApplication.quit()
 
     # ---------------- 音乐库 ----------------
     def _load_library(self) -> None:
@@ -729,6 +846,18 @@ class PlayerWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def closeEvent(self, event) -> None:
+        if not self._really_quit:
+            tray_ok = bool(getattr(self, "tray", None)) and self.tray.isVisible()
+            if tray_ok:
+                event.ignore()
+                self.hide()
+                if not self._tray_hint_shown:
+                    self._tray_hint_shown = True
+                    self.tray.showMessage(APP_TITLE, "已缩到状态栏，右键图标可以退出",
+                                          QSystemTrayIcon.Information, 3000)
+                return
+            # 系统托盘不可用（某些精简系统），那就老老实实退出，别留个看不见的进程
+            self._really_quit = True
         self._unregister_hotkeys()
         self._save_player_state()
         self.player.stop()
@@ -783,12 +912,46 @@ def _fmt(ms: int) -> str:
     return f"{ms // 60000}:{(ms // 1000) % 60:02d}"
 
 
+def _wake_existing_instance() -> None:
+    """程序缩在托盘里时再次双击图标，把已有窗口叫到前台。"""
+    u = ctypes.windll.user32
+    k = ctypes.windll.kernel32
+    me = str(Path(sys.executable if getattr(sys, "frozen", False) else sys.argv[0])).lower()
+    targets: list[int] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+    def cb(hwnd, _lparam):
+        if not u.IsWindowVisible(hwnd):
+            return True
+        pid = wt.DWORD()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        handle = k.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return True
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wt.DWORD(1024)
+            if k.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                if buf.value.lower() == me:
+                    targets.append(hwnd)
+        finally:
+            k.CloseHandle(handle)
+        return True
+
+    u.EnumWindows(cb, 0)
+    if targets:
+        u.ShowWindow(targets[0], 9)  # SW_RESTORE
+        u.SetForegroundWindow(targets[0])
+
+
 def main() -> int:
     if not _single_instance_ok():
+        _wake_existing_instance()
         return 0
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)
     app.setStyleSheet(PLAYER_QSS)
+    app.setQuitOnLastWindowClosed(False)
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     win = PlayerWindow()
