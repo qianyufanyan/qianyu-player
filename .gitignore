@@ -1,0 +1,9 @@
+venv/
+build/
+dist/
+__pycache__/
+*.pyc
+歌词缓存/
+qianyu.json
+config.json
+player.json

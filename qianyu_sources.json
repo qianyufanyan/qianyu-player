@@ -1,0 +1,12 @@
+{
+  "sources": [
+    {
+      "id": "netease",
+      "name": "网易云",
+      "kind": "gdstudio",
+      "base": "https://music-api.gdstudio.xyz/api.php",
+      "param": "netease"
+    }
+  ],
+  "active": "netease"
+}
